@@ -519,6 +519,39 @@
     ((proc.aname=sshd and proc.name != sshd) or
     proc.name=systemd-logind or proc.name=login)
 
+# The following macros allow suppressing events which are missing certain metadata.
+
+# By default, no metadata is required (so events will be raised with null/<NA> values).
+# By enabling require_container_metadata and/or require_pod_metadata, events will be
+# suppressed for some rules when the triggering event is missing certain fields.
+# IMPORTANT: This reduces noise in cases where events raised without these fields are inactionable,
+# but will suppress potentially malicious events which happen faster than the can fields populate.
+# See XXXXX for more information.
+- macro: require_container_metadata
+  condition: (never_true)
+
+- macro: has_container_metadata
+  condition: (container.image.repository exists)
+
+- macro: require_pod_metadata
+  condition: (never_true)
+
+- macro: has_pod_metadata
+  condition: (k8s.ns.name exists) and (k8s.pod.name exists)
+
+- macro: require_metadata
+  condition: require_container_metadata or require_pod_metadata
+
+- macro: has_required_metadata
+  condition: >
+    (
+      not require_metadata or
+      (
+        (not require_container_metadata or has_container_metadata) or
+        (not require_pod_metadata or has_pod_metadata)
+      )
+    )
+
 - list: cron_binaries
   items: [anacron, cron, crond, crontab]
 
@@ -1900,6 +1933,7 @@
     and container.privileged=true
     and not falco_privileged_containers
     and not user_privileged_containers
+    and has_required_metadata
   output: Privileged container started (user=%user.name user_loginuid=%user.loginuid command=%proc.cmdline %container.info image=%container.image.repository:%container.image.tag)
   priority: INFO
   tags: [container, cis, mitre_privilege_escalation, mitre_lateral_movement]
@@ -1945,6 +1979,7 @@
     and sensitive_mount
     and not falco_sensitive_mount_containers
     and not user_sensitive_mount_containers
+    and has_required_metadata
   output: Container with sensitive mount started (user=%user.name user_loginuid=%user.loginuid command=%proc.cmdline %container.info image=%container.image.repository:%container.image.tag mounts=%container.mounts)
   priority: INFO
   tags: [container, cis, mitre_lateral_movement]
@@ -2244,6 +2279,7 @@
     and not java_running_sdjagent
     and not nrpe_becoming_nagios
     and not user_known_non_sudo_setuid_conditions
+    and (container and has_required_metadata)
   output: >
     Unexpected setuid call by non-sudo, non-root program (user=%user.name user_loginuid=%user.loginuid cur_uid=%user.uid parent=%proc.pname
     command=%proc.cmdline uid=%evt.arg.uid container_id=%container.id image=%container.image.repository)
@@ -2342,7 +2378,7 @@
 # metadata about the instance. The metadata could be used to get credentials by attackers.
 - rule: Contact cloud metadata service from container
   desc: Detect attempts to contact the Cloud Instance Metadata Service from a container
-  condition: outbound and fd.sip="169.254.169.254" and container and consider_metadata_access and not user_known_metadata_access
+  condition: outbound and fd.sip="169.254.169.254" and container and consider_metadata_access and not user_known_metadata_access and has_required_metadata
   output: Outbound connection to cloud instance metadata service (command=%proc.cmdline connection=%fd.name %container.info image=%container.image.repository:%container.image.tag)
   priority: NOTICE
   tags: [network, container, mitre_discovery]
@@ -2384,6 +2420,7 @@
     not k8s_containers and
     k8s_api_server and
     not user_known_contact_k8s_api_server_activities
+    and has_required_metadata
   output: Unexpected connection to K8s API Server from container (command=%proc.cmdline %container.info image=%container.image.repository:%container.image.tag connection=%fd.name)
   priority: NOTICE
   tags: [network, k8s, container, mitre_discovery]
@@ -2850,7 +2887,7 @@
 
 - rule: The docker client is executed in a container
   desc: Detect a k8s client tool executed inside a container
-  condition: spawned_process and container and not user_known_k8s_client_container_parens and proc.name in (k8s_client_binaries)
+  condition: spawned_process and container and not user_known_k8s_client_container_parens and proc.name in (k8s_client_binaries) and has_required_metadata
   output: "Docker or kubernetes client executed in container (user=%user.name user_loginuid=%user.loginuid %container.info parent=%proc.pname cmdline=%proc.cmdline image=%container.image.repository:%container.image.tag)"
   priority: WARNING
   tags: [container, mitre_execution]
